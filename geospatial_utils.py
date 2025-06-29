@@ -1,133 +1,169 @@
 # geospatial_utils.py
 import os
+import re
 import geopandas as gpd
 import pandas as pd
-from shapely.geometry import Point
 
-# Optional: English to Arabic road name mapping (still useful)
-ROAD_NAME_TRANSLATIONS = {
-    "King Fahd Road": "طريق الملك فهد",
-    "Prince Mohammed Ibn Salman Road": "طريق الأمير محمد بن سلمان",
-    "King Abdul-Aziz Road": "طريق الملك عبدالعزيز",
-    "Northern Ring Road": "طريق الدائري الشمالي",
-    "Eastern Ring Road": "طريق الدائري الشرقي",
-    "Abu Baker Road": "طريق ابو بكر الصديق",
-    "Airport Road": "طريق المطار"
-}
-
-# Optional: Known landmark coordinates for "query by location"
-KNOWN_LOCATIONS = {
-    "King Fahd Hospital": (50.2001, 26.3023),
-    "King Saud University": (46.7161, 24.7247),
-    "Riyadh Airport": (46.6985, 24.9570)
-}
-
-# Load all .geojson files from Jan-year folders
 def load_all_road_data(base_path="data/new/"):
+    """
+    Load all GeoJSONs from data/new/Jan YYYY folders into one GeoDataFrame,
+    tagging each record with month_year and source_file.
+    """
     all_data = []
     for year_folder in os.listdir(base_path):
-        full_path = os.path.join(base_path, year_folder)
-        if os.path.isdir(full_path) and year_folder.startswith("Jan"):
-            for file in os.listdir(full_path):
-                if file.endswith(".geojson"):
+        year_path = os.path.join(base_path, year_folder)
+        if os.path.isdir(year_path) and year_folder.startswith("Jan"):
+            for fname in os.listdir(year_path):
+                if fname.endswith(".geojson"):
                     try:
-                        gdf = gpd.read_file(os.path.join(full_path, file))
-                        gdf["month_year"] = year_folder
-                        gdf["source_file"] = file
+                        gdf = gpd.read_file(os.path.join(year_path, fname))
+                        gdf["month_year"]  = year_folder
+                        gdf["source_file"] = fname
                         all_data.append(gdf)
                     except Exception as e:
-                        print(f"⚠️ Error reading {file}: {e}")
+                        print(f"⚠️ Error reading {fname}: {e}")
     return gpd.GeoDataFrame(pd.concat(all_data, ignore_index=True)) if all_data else gpd.GeoDataFrame()
 
-# Main query execution
 def run_query_roads(roads, params, previous_context=None):
-    query_type = params.get("query_type")
-    month_year = params.get("month_year")
-    road_name = params.get("road_name")
-    speed_limit = params.get("max_speed")
-    min_distance = params.get("min_distance")
-    top_n = params.get("top_n", 5)
-    location_name = params.get("location_name")
-    radius_km = params.get("radius_km", 5)
-    compare_year = params.get("compare_year")
+    """
+    Execute structured queries on the combined roads GeoDataFrame.
+    Returns: (result_df, chart_df_or_None, summary_dict_or_None)
+    """
+    qt        = params.get("query_type")
+    year1_raw = params.get("month_year", "")
+    year2_raw = params.get("compare_year", "")
+    road_name = params.get("road_name", "").strip().lower()
+    max_spd   = params.get("max_speed")
+    min_dist  = params.get("min_distance")
+    top_n     = params.get("top_n", 5)
 
-    # Filter by month
-    if month_year:
-        roads = roads[roads["month_year"] == month_year]
+    # Keep full copy for cross-year logic
+    full_df = roads.copy()
 
-    # ========== QUERY TYPES ========== #
+    # Normalize year1 filter: exact month or full-year
+    if year1_raw:
+        # If it contains a month (e.g. "Jan"), match exact
+        if "Jan" in year1_raw:
+            roads = full_df[full_df["month_year"] == year1_raw]
+        else:
+            # Extract 4-digit year and match any month ending
+            m = re.search(r"(20\d{2})", year1_raw)
+            if m:
+                yr = m.group(1)
+                roads = full_df[full_df["month_year"].str.endswith(yr)]
+            else:
+                # If cannot parse, default to full dataset
+                roads = full_df
 
-    if query_type == "show_all_roads":
+    # === 1. show_all_roads ===
+    if qt == "show_all_roads":
         return roads, None, None
 
-    elif query_type == "filter_by_road_name" and road_name:
-        filtered = roads[roads["source_file"]
-            .fillna("")
+    # === 2. filter_by_road_name ===
+    if qt == "filter_by_road_name" and road_name:
+        df = roads
+        filtered = df[df["source_file"]
             .str.lower()
-            .str.contains(road_name.strip().lower(), na=False)
+            .str.contains(road_name, na=False)
         ]
         return filtered, None, None
 
-    elif query_type == "filter_by_speed" and speed_limit is not None:
-        return roads[roads["speedLimit"] <= speed_limit], None, None
+    # === 3. filter_by_speed ===
+    if qt == "filter_by_speed" and max_spd is not None:
+        return roads[roads["speedLimit"] <= max_spd], None, None
 
-    elif query_type == "filter_by_distance" and min_distance is not None:
-        return roads[roads["distance"] >= min_distance], None, None
+    # === 4. filter_by_distance ===
+    if qt == "filter_by_distance" and min_dist is not None:
+        return roads[roads["distance"] >= min_dist], None, None
 
-    elif query_type == "summary_stats":
+    # === 5. summary_stats ===
+    if qt == "summary_stats":
         stats = {
-            "average_speed": round(roads["speedLimit"].mean(), 2),
-            "max_speed": roads["speedLimit"].max(),
-            "min_speed": roads["speedLimit"].min(),
-            "avg_distance": round(roads["distance"].mean(), 2),
-            "total_segments": len(roads)
+            "average_speed":    round(roads["speedLimit"].mean(), 2),
+            "max_speed":        roads["speedLimit"].max(),
+            "min_speed":        roads["speedLimit"].min(),
+            "average_distance": round(roads["distance"].mean(), 2),
+            "total_segments":   len(roads)
         }
         return roads.iloc[0:0], None, stats
 
-    elif query_type == "detect_anomalies":
+    # === 6. detect_anomalies ===
+    if qt == "detect_anomalies":
         anomalies = roads[
-            (roads["speedLimit"] > 150) | (roads["distance"] > 1000)
+            (roads["speedLimit"] > 150) |
+            (roads["distance"] > 1000)
         ]
         return anomalies, None, None
 
-    elif query_type == "top_n":
+    # === 7. top_n ===
+    if qt == "top_n":
         sort_field = params.get("sort_by", "distance")
-        sorted_roads = roads.sort_values(by=sort_field, ascending=False).head(top_n)
-        return sorted_roads, None, None
+        top_df = roads.sort_values(by=sort_field, ascending=False).head(top_n)
+        return top_df, None, None
 
-    elif query_type == "near_location" and location_name:
-        lon, lat = KNOWN_LOCATIONS.get(location_name, (None, None))
-        if lat is None or lon is None:
-            return gpd.GeoDataFrame(), None, None
+    # === 8. compare_years ===
+    if qt == "compare_years" and year1_raw and year2_raw:
+        # Filter full_df by name if needed
+        df = full_df
+        if road_name:
+            df = df[df["source_file"]
+                .str.lower()
+                .str.contains(road_name, na=False)
+            ]
+        # Build year1 & year2 subsets using same normalization
+        def subset_by(raw):
+            if "Jan" in raw:
+                return df[df["month_year"] == raw]
+            m2 = re.search(r"(20\d{2})", raw)
+            if m2:
+                yr2 = m2.group(1)
+                return df[df["month_year"].str.endswith(yr2)]
+            return df
 
-        point = Point(lon, lat)
-        search_gdf = gpd.GeoDataFrame(geometry=[point], crs="EPSG:4326")
-        buffer = search_gdf.to_crs(epsg=3857).buffer(radius_km * 1000).to_crs(epsg=4326).iloc[0]
+        df1 = subset_by(year1_raw)
+        df2 = subset_by(year2_raw)
 
-        nearby = roads[roads.geometry.within(buffer)]
-        return nearby, buffer, point
-
-    elif query_type == "compare_years" and compare_year and month_year:
-        # Load base and compare datasets
-        base = roads[roads["month_year"] == month_year]
-        other = roads[roads["month_year"] == compare_year]
-
-        merged = pd.merge(
-            base,
-            other,
-            on="segmentId",
-            suffixes=(f"_{month_year}", f"_{compare_year}")
+        # 8a) Try segment-level merge
+        merged = pd.merge(df1, df2, on="segmentId",
+            suffixes=(f"_{year1_raw}", f"_{year2_raw}")
         )
-        return merged, None, None
+        if not merged.empty:
+            # add diff columns
+            merged["speed_diff"]    = merged[f"speedLimit_{year2_raw}"] - merged[f"speedLimit_{year1_raw}"]
+            merged["distance_diff"] = merged[f"distance_{year2_raw}"]   - merged[f"distance_{year1_raw}"]
+            cols = [
+                "segmentId",
+                f"speedLimit_{year1_raw}", f"speedLimit_{year2_raw}", "speed_diff",
+                f"distance_{year1_raw}",   f"distance_{year2_raw}",   "distance_diff"
+            ]
+            return merged[cols], None, None
 
-    elif query_type == "trend_analysis" and road_name:
-        road_filter = roads[roads["source_file"].str.contains(road_name, case=False, na=False)]
-        summary = road_filter.groupby("month_year").agg({
+        # 8b) Fallback two-row summary
+        def summarize(df_sub, label):
+            return {
+                f"avg_speed_{label}":    round(df_sub["speedLimit"].mean(), 2),
+                f"avg_distance_{label}": round(df_sub["distance"].mean(), 2),
+                f"count_{label}":        len(df_sub)
+            }
+
+        s1 = summarize(df1, year1_raw)
+        s2 = summarize(df2, year2_raw)
+        cmp_df = pd.DataFrame([s1, s2], index=[year1_raw, year2_raw])\
+                   .reset_index()\
+                   .rename(columns={"index":"year"})
+        return cmp_df, None, None
+
+    # === 9. trend_analysis ===
+    if qt == "trend_analysis" and road_name:
+        trend_df = full_df[ full_df["source_file"]
+            .str.lower()
+            .str.contains(road_name, na=False)
+        ]
+        trend = trend_df.groupby("month_year").agg({
             "speedLimit": "mean",
-            "distance": "mean"
+            "distance":   "mean"
         }).reset_index()
-        return road_filter.iloc[0:0], summary, None
+        return trend_df.iloc[0:0], trend, None
 
-    # ========== FALLBACK ========== #
-
+    # === Fallback ===
     return gpd.GeoDataFrame(), None, None
