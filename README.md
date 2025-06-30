@@ -92,9 +92,10 @@ streamlit run app.py
 
 ## 📌 TODO (Future Ideas)
 
-* Add map drawing tool for visual filtering
+* Add a prediction model for predicting traffic or needed insights
 * Integrate live traffic feed via API
 * Export query results to Excel or PDF
+* Add Time-Series model For Predictions 
 
 ---
 
