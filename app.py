@@ -12,10 +12,7 @@ st.title("🚦 THTC Demo – AI Chatbot For Road Data (2022–2025)")
 # ─── Load all roads once ──────────────────────────────────────────────────────
 roads = load_all_road_data("data/new/")
 
-# ─── Show available road names ───────────────────────────────────────────────
-st.subheader("🛣️ Available Road Names")
-names = roads["source_file"].str.split(" - ").str[0].unique().tolist()
-st.write(names)
+
 
 # ─── Initialize memory for follow-up queries ─────────────────────────────────
 if "chat_memory" not in st.session_state:
